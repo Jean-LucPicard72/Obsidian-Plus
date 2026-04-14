@@ -271,12 +271,110 @@ concurrency = 512   # макс. одновременных соединений
 
 ---
 
+## Мультипользовательская схема
+
+> **Важно:** протокол MTProto не поддерживает привязку ключа к устройству. Любой, кто получил ссылку, может ею пользоваться и переслать её дальше. Единственная защита — давать каждому пользователю **свой** секрет.
+
+### Как это работает
+
+Один пользователь = один секрет = один порт = один systemd-сервис.  
+Тогда можно видеть трафик каждого отдельно и отозвать конкретного человека, не затрагивая остальных.
+
+```
+:443  → mtg@alice  (секрет alice)
+:444  → mtg@bob    (секрет bob)
+:445  → mtg@carol  (секрет carol)
+```
+
+### Шаблонный systemd-юнит (`/etc/systemd/system/mtg@.service`)
+
+```bash
+cat > /etc/systemd/system/mtg@.service << 'EOF'
+[Unit]
+Description=MTProto Proxy — %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nobody
+ExecStart=/usr/local/bin/mtg run /etc/mtg/%i.toml
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+### Добавить пользователя (пример — Alice, порт 443)
+
+```bash
+# 1. Сгенерировать секрет
+mtg generate-secret --hex tls www.amazon.com
+
+# 2. Создать конфиг
+cat > /etc/mtg/alice.toml << 'EOF'
+secret = "ВАШ_СЕКРЕТ_ALICE"
+bind-to = "0.0.0.0:443"
+
+[stats]
+bind-to = "127.0.0.1:3443"   # порт метрик = порт прокси + 3000
+EOF
+
+# 3. Включить и запустить
+systemctl enable --now mtg@alice
+systemctl status mtg@alice
+```
+
+Для Bob — аналогично, но порт `444`, метрики `127.0.0.1:3444`, конфиг `/etc/mtg/bob.toml`.
+
+### Посмотреть трафик конкретного пользователя
+
+```bash
+# Alice
+curl -s http://127.0.0.1:3443/stats | python3 -c "
+import json,sys
+s = json.load(sys.stdin)
+print('Active:', s['connections']['active'])
+print('In:    ', s['traffic']['ingress'] // 1024 // 1024, 'MB')
+print('Out:   ', s['traffic']['egress'] // 1024 // 1024, 'MB')
+"
+```
+
+### Отозвать пользователя
+
+```bash
+# Мгновенно — все его соединения рвутся, ссылка перестаёт работать
+systemctl disable --now mtg@bob
+```
+
+Чтобы потом выдать Bob новый ключ — создаёшь новый секрет, обновляешь `/etc/mtg/bob.toml`, запускаешь снова.
+
+### Firewall — открыть все пользовательские порты
+
+```bash
+# ufw
+for port in 443 444 445; do
+  ufw allow $port/tcp comment "MTProto"
+done
+ufw reload
+```
+
+---
+
 ## Безопасность
 
 - Секрет — это одновременно и аутентификация, и ключ обфускации. **Не публикуй его.**
-- Раздавай отдельную ссылку каждому пользователю через `mtg generate-secret` (разные секреты → разные ссылки → можно отозвать отдельного пользователя).
+- Один секрет на одного пользователя — если ссылка утечёт, отзываешь только его инстанс.
+- Ссылку **можно переслать**: технически ничто не мешает человеку поделиться ею. Лимит `concurrency` в конфиге защитит сервер от перегрузки, но не от "лишних" пользователей.
 - Используй TLS-обфускацию (`--hex tls`) — без неё трафик легче детектировать.
-- Сервис запускается под `nobody` — дополнительная изоляция.
+- Сервисы запускаются под `nobody` — дополнительная изоляция.
 
 ---
 
