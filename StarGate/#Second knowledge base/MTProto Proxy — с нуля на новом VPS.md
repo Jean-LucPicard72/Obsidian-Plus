@@ -19,7 +19,6 @@
 ## Этап 0 — Первое подключение и минимальная безопасность
 
 ```bash
-# Подключиться к серверу
 ssh root@<IP_СЕРВЕРА>
 ```
 
@@ -50,11 +49,20 @@ ssh-copy-id deploy@<IP_СЕРВЕРА>
 
 После проверки что вход по ключу работает — отключить вход по паролю:
 ```bash
-# /etc/ssh/sshd_config
-PasswordAuthentication no
+nano /etc/ssh/sshd_config
+# Найти и поменять: PasswordAuthentication no
+```
 
+Перезагрузить SSH:
+```bash
+# Debian
+systemctl reload ssh
+
+# Ubuntu
 systemctl reload sshd
 ```
+
+> На Debian сервис называется `ssh`, не `sshd` — не перепутай.
 
 ---
 
@@ -67,50 +75,52 @@ dpkg --print-architecture
 # Ответ: amd64, arm64 или armhf
 ```
 
-### 1.2 Скачать бинарник
+### 1.2 Узнать актуальную версию
 
 ```bash
-MTG_VERSION="2.1.7"
-ARCH="amd64"   # ← замени если arm64 / armhf
+curl -s https://api.github.com/repos/9seconds/mtg/releases/latest | grep tag_name
+# Пример: "tag_name": "v2.2.8"
+```
 
-curl -Lo /usr/local/bin/mtg \
-  "https://github.com/9seconds/mtg/releases/download/v${MTG_VERSION}/mtg-linux-${ARCH}"
+### 1.3 Скачать и распаковать бинарник
 
-chmod +x /usr/local/bin/mtg
+```bash
+# Задать переменные (подставь свою версию и архитектуру)
+MTG_VERSION="2.2.8"
+ARCH="amd64"
+
+cd /tmp
+curl -fsSL -Lo mtg.tar.gz \
+  "https://github.com/9seconds/mtg/releases/download/v${MTG_VERSION}/mtg-${MTG_VERSION}-linux-${ARCH}.tar.gz"
+
+tar -xzf mtg.tar.gz
+sudo mv mtg-${MTG_VERSION}-linux-${ARCH}/mtg /usr/local/bin/mtg
+sudo chmod +x /usr/local/bin/mtg
+
 mtg --version
 ```
 
-Ожидаемый вывод:
-```
-mtg/2.1.7 ...
-```
-
-> Актуальную версию смотри на https://github.com/9seconds/mtg/releases
-
-### 1.3 Дать права на порт 443 без root
-
-```bash
-setcap cap_net_bind_service=+ep /usr/local/bin/mtg
-```
+> Начиная с v2.2.x бинарник упакован в `.tar.gz` в подпапке — прямого файла больше нет.
 
 ---
 
 ## Этап 2 — Генерация секрета
 
 ```bash
-mtg generate-secret --hex tls www.amazon.com
+mtg generate-secret -x www.yandex.ru
 ```
 
-- `tls` — включает TLS-обфускацию: трафик замаскирован под HTTPS
-- `www.amazon.com` — домен, под который маскируется рукопожатие. Можно любой крупный HTTPS-сайт (`www.google.com`, `cloudflare.com`)
+- `-x` — вывести в hex-формате (нужен для конфига)
+- `www.yandex.ru` — домен, под который маскируется TLS-рукопожатие. Можно любой крупный HTTPS-сайт
 
 Пример вывода:
 ```
-ee3c3aface4d9e0000000000000000002e616d617a6f6e2e636f6d
-tg://proxy?server=<IP>&port=443&secret=ee3c3a...
+ee3c3aface4d9e0000000000000000002e79616e6465782e7275
 ```
 
 **Сохрани секрет** — он понадобится в конфиге и для раздачи ссылок.
+
+> Синтаксис изменился в v2.2.x: домен теперь просто аргумент, флага `tls` больше нет.
 
 ---
 
@@ -122,14 +132,11 @@ tg://proxy?server=<IP>&port=443&secret=ee3c3a...
 mkdir -p /etc/mtg
 
 cat > /etc/mtg/config.toml << 'EOF'
-# Твой секрет из шага 2
-secret = "ee3c3aface4d9e0000000000000000002e616d617a6f6e2e636f6d"
+# Секрет из шага 2
+secret = "ee3c3aface4d9e0000000000000000002e79616e6465782e7275"
 
-# Адрес и порт прослушивания
+# Слушать на всех интерфейсах (0.0.0.0 = на любом IP этой машины)
 bind-to = "0.0.0.0:443"
-
-# Максимум одновременных соединений (опционально, 0 = без ограничений)
-# concurrency = 4096
 
 # Локальная статистика
 [stats]
@@ -137,11 +144,11 @@ bind-to = "127.0.0.1:3129"
 EOF
 ```
 
-### 3.2 Проверить конфиг
+### 3.2 Проверить конфиг вручную
 
 ```bash
 mtg run /etc/mtg/config.toml
-# Должно запуститься без ошибок, Ctrl+C для остановки
+# Моргающий курсор = работает. Ctrl+C для остановки.
 ```
 
 ---
@@ -165,6 +172,10 @@ Restart=always
 RestartSec=5
 LimitNOFILE=65536
 
+# Права на порт 443 без root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
 # Изоляция процесса
 NoNewPrivileges=yes
 PrivateTmp=yes
@@ -175,6 +186,8 @@ ProtectHome=yes
 WantedBy=multi-user.target
 EOF
 ```
+
+> `AmbientCapabilities` — обязательно при `User=nobody`. Без него `setcap` на бинарнике не поможет.
 
 ### 4.2 Запустить и включить автозапуск
 
@@ -190,7 +203,7 @@ systemctl status mtg
 
 ## Этап 5 — Firewall
 
-### Если используется UFW (Ubuntu по умолчанию)
+### UFW (Ubuntu по умолчанию)
 
 ```bash
 ufw allow 443/tcp comment "MTProto Proxy"
@@ -198,46 +211,34 @@ ufw reload
 ufw status
 ```
 
-### Если используется nftables (Debian по умолчанию)
+### nftables (Debian по умолчанию)
 
 ```bash
-# Проверить текущие правила
 nft list ruleset
-
-# Добавить разрешение для порта 443
 nft add rule inet filter input tcp dport 443 accept comment \"MTProto\"
-
-# Сохранить (Debian 12)
 nft list ruleset > /etc/nftables.conf
 systemctl restart nftables
-```
-
-### Если firewall не настроен
-
-```bash
-# Быстро проверить что порт слушается
-ss -tlnp | grep 443
 ```
 
 ---
 
 ## Этап 6 — Подключение в Telegram
 
-### Способ 1 — Ссылка (быстрее всего)
+### Узнать IP сервера
 
-Сформируй ссылку:
+```bash
+curl -s ifconfig.me
+```
+
+### Ссылка для подключения
+
 ```
 https://t.me/proxy?server=<IP_СЕРВЕРА>&port=443&secret=<ТВОЙ_СЕКРЕТ>
 ```
 
 Открой на телефоне → Telegram предложит «Подключиться».
 
-Можно также использовать схему `tg://`:
-```
-tg://proxy?server=<IP_СЕРВЕРА>&port=443&secret=<ТВОЙ_СЕКРЕТ>
-```
-
-### Способ 2 — Вручную в настройках
+### Вручную в настройках
 
 `Настройки → Конфиденциальность и безопасность → Тип прокси → MTProto`
 
@@ -249,50 +250,25 @@ tg://proxy?server=<IP_СЕРВЕРА>&port=443&secret=<ТВОЙ_СЕКРЕТ>
 
 ---
 
-## Этап 7 — Проверка работы
+## Управление ключами — отдельный секрет на каждого
 
-### Проверка порта с локальной машины
+Каждый пользователь получает свой секрет. Разошёлся по городу — удаляешь только его, остальные не замечают.
 
-```bash
-nc -zv <IP_СЕРВЕРА> 443
-# Ожидаемо: Connection to ... succeeded
-```
-
-### Просмотр логов
+### Добавить пользователя
 
 ```bash
-journalctl -u mtg -f
+mtg generate-secret -x www.yandex.ru
+# Сохрани вывод — это секрет для конкретного человека
 ```
 
-### Статистика соединений
-
-```bash
-curl -s http://127.0.0.1:3129/stats | python3 -m json.tool
-```
-
-Полезные поля:
-- `connections.active` — активные соединения прямо сейчас
-- `traffic.ingress` / `traffic.egress` — суммарный трафик с запуска
-
----
-
-## Несколько секретов для разных пользователей
-
-Каждый пользователь может получить свой секрет — тогда их можно отзывать независимо:
-
-```bash
-# Генерируем отдельный секрет для каждого
-mtg generate-secret --hex tls www.amazon.com  # пользователь 1
-mtg generate-secret --hex tls www.amazon.com  # пользователь 2
-```
-
-В конфиге перечисляем все секреты через массив:
+В конфиге перечисляешь все секреты массивом:
 
 ```toml
 # /etc/mtg/config.toml
 secret = [
   "ee3c3a...",   # Аня
   "ff4d4b...",   # Петя
+  "aa1b2c...",   # Вася
 ]
 
 bind-to = "0.0.0.0:443"
@@ -301,9 +277,30 @@ bind-to = "0.0.0.0:443"
 bind-to = "127.0.0.1:3129"
 ```
 
-Чтобы отозвать пользователя — убираем его секрет и перезапускаем:
+### Отозвать пользователя
+
+Удалить его строку из `secret = [...]` и перезапустить:
+
 ```bash
+nano /etc/mtg/config.toml
 systemctl restart mtg
+```
+
+Его ссылка перестанет работать. Остальные продолжают работать без изменений.
+
+---
+
+## Проверка работы
+
+```bash
+# Порт слушается?
+ss -tlnp | grep 443
+
+# Логи
+journalctl -u mtg -f
+
+# Статистика соединений
+curl -s http://127.0.0.1:3129/stats | python3 -m json.tool
 ```
 
 ---
@@ -311,16 +308,17 @@ systemctl restart mtg
 ## Обновление MTG
 
 ```bash
-MTG_VERSION="X.Y.Z"   # новая версия
+MTG_VERSION="X.Y.Z"
 ARCH="amd64"
 
 systemctl stop mtg
 
-curl -Lo /usr/local/bin/mtg \
-  "https://github.com/9seconds/mtg/releases/download/v${MTG_VERSION}/mtg-linux-${ARCH}"
-
-chmod +x /usr/local/bin/mtg
-setcap cap_net_bind_service=+ep /usr/local/bin/mtg
+cd /tmp
+curl -fsSL -Lo mtg.tar.gz \
+  "https://github.com/9seconds/mtg/releases/download/v${MTG_VERSION}/mtg-${MTG_VERSION}-linux-${ARCH}.tar.gz"
+tar -xzf mtg.tar.gz
+sudo mv mtg-${MTG_VERSION}-linux-${ARCH}/mtg /usr/local/bin/mtg
+sudo chmod +x /usr/local/bin/mtg
 
 systemctl start mtg
 mtg --version
@@ -330,61 +328,44 @@ mtg --version
 
 ## Решение частых проблем
 
+### `permission denied` на порту 443
+
+Убедись что в `/etc/systemd/system/mtg.service` есть:
+```ini
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+```
+Затем:
+```bash
+systemctl daemon-reload && systemctl restart mtg
+```
+
+### `systemctl reload sshd` → Unit not found
+
+На Debian сервис называется `ssh`:
+```bash
+systemctl reload ssh
+```
+
+### Curl скачал 9 байт вместо бинарника
+
+Значит URL неверный. Проверь точное имя файла в релизе:
+```bash
+curl -s https://api.github.com/repos/9seconds/mtg/releases/latest | grep browser_download_url
+```
+
 ### Telegram не подключается
 
 ```bash
-# 1. Порт слушается?
+# Порт слушается?
 ss -tlnp | grep 443
 
-# 2. Логи MTG
-journalctl -u mtg --since "5 min ago"
+# Логи
+journalctl -u mtg --since "5 min ago" --no-pager
 
-# 3. Доступность снаружи (выполнять НЕ на сервере)
+# Доступность снаружи (с другой машины)
 nc -zv <IP> 443
-
-# 4. Firewall не режет?
-iptables -L -n | grep 443
 ```
-
-### `bind: permission denied` на порту 443
-
-```bash
-# Вариант 1 — capability (уже делали в шаге 1.3)
-setcap cap_net_bind_service=+ep /usr/local/bin/mtg
-
-# Вариант 2 — сменить порт на 8443 и проксировать через iptables
-# В конфиге: bind-to = "0.0.0.0:8443"
-iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 8443
-```
-
-### `failed to start` — ошибка в конфиге
-
-```bash
-# Проверить TOML вручную
-mtg run /etc/mtg/config.toml
-# Покажет подробную ошибку в stdout
-```
-
-### Высокое потребление CPU/памяти
-
-Добавить ограничение в конфиг:
-```toml
-concurrency = 512
-```
-
-Перезапустить:
-```bash
-systemctl restart mtg
-```
-
----
-
-## Безопасность — кратко
-
-- **Не публикуй секрет** — он и аутентифицирует, и шифрует обфускацию
-- **Используй TLS-обфускацию** (`--hex tls`) — без неё трафик проще детектировать по сигнатуре
-- Сервис запускается под `nobody` — минимальные привилегии
-- Регулярно проверяй новые версии MTG на GitHub
 
 ---
 
