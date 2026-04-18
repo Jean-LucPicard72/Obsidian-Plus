@@ -1,0 +1,173 @@
+# AdGuard Home + Nginx Proxy Manager
+
+> Свой DNS-сервер с блокировкой рекламы и доступ к домашним сервисам по имени вместо IP:порт.
+> Дополнение к [[Tailscale + Mihomo на Proxmox]].
+
+---
+
+## Что даёт эта связка
+
+| Без неё | С ней |
+|---|---|
+| `https://192.168.1.104:8006` | `https://proxmox.home` |
+| `http://192.168.1.163:9090/ui` | `http://mihomo.home` |
+| Реклама везде | Реклама заблокирована на всех устройствах |
+| Стандартный DNS провайдера | Свой DNS с кэшем и контролем |
+
+---
+
+## Архитектура
+
+```
+Устройства в сети
+      │
+      ▼
+AdGuard Home (DNS, порт 53)
+      │
+      ├── proxmox.home → 192.168.1.104
+      ├── mihomo.home  → 192.168.1.163
+      └── Реклама      → заблокировано
+      │
+      ▼
+Nginx Proxy Manager
+      │
+      ├── proxmox.home → 192.168.1.104:8006
+      └── mihomo.home  → 192.168.1.163:9090
+```
+
+---
+
+## Этап 1 — LXC для AdGuard Home
+
+### 1.1 Создание контейнера
+
+В Proxmox UI → **Create CT**:
+
+| Параметр | Значение |
+|---|---|
+| Hostname | `AdGuard` |
+| Template | Debian 12 |
+| Disk | 2 GB |
+| RAM | 256 MB |
+| Network | bridge `vmbr0`, статический IP (например `192.168.1.53`) |
+| Firewall | снять галочку |
+
+> Статический IP удобен — его прописываешь в настройках роутера как DNS-сервер.
+
+Включить Nesting: **CT → Options → Features → Nesting ✓**
+
+### 1.2 Установка AdGuard Home
+
+```bash
+apt update && apt install -y curl
+
+curl -sSL https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh | sh -s -- -v
+```
+
+Открыть в браузере: `http://192.168.1.53:3000` — пройти первоначальную настройку.
+
+После настройки AdGuard Home слушает на порту **53** (DNS) и **80/3000** (веб-интерфейс).
+
+### 1.3 Прописать AdGuard как DNS на роутере
+
+В настройках роутера (обычно 192.168.1.1):
+- DNS сервер: `192.168.1.53`
+
+Все устройства в сети начнут использовать AdGuard Home.
+
+### 1.4 Добавить кастомные локальные имена
+
+В AdGuard Home → **Filters → DNS rewrites → Add DNS rewrite**:
+
+| Домен | IP |
+|---|---|
+| `proxmox.home` | `192.168.1.104` |
+| `mihomo.home` | `192.168.1.163` |
+| `adguard.home` | `192.168.1.53` |
+
+---
+
+## Этап 2 — LXC для Nginx Proxy Manager
+
+### 2.1 Создание контейнера
+
+| Параметр | Значение |
+|---|---|
+| Hostname | `NginxPM` |
+| Template | Debian 12 |
+| Disk | 4 GB |
+| RAM | 256 MB |
+| Network | bridge `vmbr0`, статический IP (например `192.168.1.80`) |
+
+### 2.2 Установка Docker
+
+```bash
+apt update && apt install -y curl
+
+curl -fsSL https://get.docker.com | sh
+```
+
+### 2.3 Установка Nginx Proxy Manager
+
+```bash
+mkdir -p /opt/nginxpm && cd /opt/nginxpm
+
+cat > docker-compose.yml << 'EOF'
+services:
+  app:
+    image: jc21/nginx-proxy-manager:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "81:81"
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+EOF
+
+docker compose up -d
+```
+
+Открыть веб-интерфейс: `http://192.168.1.80:81`
+
+Логин по умолчанию:
+- Email: `admin@example.com`
+- Password: `changeme`
+
+### 2.4 Добавить прокси-хосты
+
+В Nginx Proxy Manager → **Proxy Hosts → Add Proxy Host**:
+
+**Proxmox:**
+- Domain: `proxmox.home`
+- Scheme: `https`
+- Forward IP: `192.168.1.104`
+- Port: `8006`
+- Включить: **Websockets Support**
+- SSL: отключить верификацию (`SSL → Custom certificate → off`)
+
+**Mihomo UI:**
+- Domain: `mihomo.home`
+- Scheme: `http`
+- Forward IP: `192.168.1.163` (или IP Tailscale LXC)
+- Port: `9090`
+
+---
+
+## Проверка
+
+1. На любом устройстве в сети открыть `http://proxmox.home` — должен открыться Proxmox
+2. В AdGuard Home → **Query Log** — видны все DNS-запросы и что заблокировано
+
+---
+
+## Следующие шаги
+
+- [ ] Настроить списки блокировки в AdGuard Home (AdGuard DNS filter, EasyList Russia)
+- [ ] Настроить SSL-сертификаты для локальных доменов (Let's Encrypt или self-signed)
+- [ ] Добавить AdGuard Home в Tailscale для работы вне дома
+
+---
+
+*Актуально для AdGuard Home 0.107+, Nginx Proxy Manager 2.x*

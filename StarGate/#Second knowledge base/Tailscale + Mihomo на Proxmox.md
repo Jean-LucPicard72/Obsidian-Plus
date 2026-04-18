@@ -1,6 +1,6 @@
 # Tailscale + Mihomo на Proxmox
 
-> **Цель:** Доступ к домашней сети из любой точки мира через Tailscale, умная маршрутизация трафика через Mihomo, имитация заблокированных сайтов для приложений с антивпн-защитой.
+> **Цель:** Доступ к домашней сети из любой точки мира через Tailscale, умная маршрутизация трафика через Mihomo — российские сайты напрямую, заблокированные через внешний прокси.
 
 ---
 
@@ -17,21 +17,20 @@
 ┌─────────────────────────────────────────┐
 │         Proxmox VE (дома, Россия)       │
 │                                         │
-│  ┌──────────────┐   ┌────────────────┐  │
-│  │ LXC: Tailsc. │──▶│ LXC: Mihomo   │  │
-│  │ Exit node    │   │ tproxy + DNS  │  │
-│  │ Subnet router│   │ правила       │  │
-│  └──────────────┘   └───────┬───────┘  │
-│                              │          │
-└──────────────────────────────┼──────────┘
-                               │
-              ┌────────────────┼──────────────┐
-              ▼                ▼               ▼
-         Белый список    Заблокированные   Остальное
-         (DIRECT)        (REJECT → "нет")  (через прокси)
+│  ┌──────────────────────────────────┐   │
+│  │ LXC: Tailscale + Mihomo          │   │
+│  │ Exit node + Subnet router        │   │
+│  │ TPROXY → Mihomo (локально)       │   │
+│  └──────────────────────────────────┘   │
+│                                         │
+└─────────────────────────────────────────┘
+         │
+         ├── GEOIP,RU → DIRECT (домашний IP)
+         ├── GEOSITE,ru-blocked → vdsina (VLESS Reality)
+         └── MATCH → vdsina
 ```
 
-**Ключевая идея:** Твой выходной IP — домашний российский. Для всех сайтов и приложений ты обычный пользователь. Приложения с антивпн-защитой пингуют "заблокированные" сайты — Mihomo отвечает `REJECT`, имитируя блокировку провайдера.
+**Ключевая идея:** Mihomo работает в том же LXC что и Tailscale. TPROXY перехватывает трафик с tailscale0 и отдаёт локальному Mihomo. Российские сайты идут напрямую через домашний IP, заблокированные — через внешний прокси.
 
 ---
 
@@ -40,11 +39,11 @@
 - Proxmox VE 8.x+
 - LXC-шаблон Debian 12 (скачать в Proxmox: Datacenter → Storage → CT Templates)
 - Аккаунт на [tailscale.com](https://tailscale.com) (бесплатный)
-- (Опционально) Прокси-сервер для трафика через узел
+- Внешний прокси-сервер (VLESS Reality, Shadowsocks и др.)
 
 ---
 
-## Этап 1 — LXC для Tailscale
+## Этап 1 — LXC для Tailscale + Mihomo
 
 ### 1.1 Создание контейнера
 
@@ -55,74 +54,76 @@
 | Hostname | `Tailscale` |
 | Password | придумать (логин всегда `root`) |
 | Template | Debian 12 |
-| Disk | 2 GB |
+| Disk | 4 GB |
 | CPU | 1 core |
-| RAM | 128 MB (своп не нужен) |
+| RAM | 256 MB |
 | Network | bridge `vmbr0`, DHCP |
 | Firewall | снять галочку |
 
-> ⚠️ Обязательно поставить галочку **Privileged container** на вкладке General — без неё `/dev/tun` недоступен и Tailscale не запустится.
+> ⚠️ Обязательно поставить галочку **Privileged container** на вкладке General.
 
-### 1.2 Включить Nesting и TUN до первого запуска
+### 1.2 Включить Nesting и TUN
 
 **Nesting** нужен для корректной работы systemd внутри LXC.
 
 В Proxmox UI: **CT → Options → Features → Nesting ✓**
 
-Затем на хосте Proxmox (Shell или SSH):
+На хосте Proxmox:
 
 ```bash
 nano /etc/pve/lxc/<ID>.conf
 ```
 
-Добавить в конец файла:
+Добавить в конец:
 
 ```
 lxc.cgroup2.devices.allow: c 10:200 rwm
 lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
 ```
 
-Где `<ID>` — номер контейнера (например `100`). Посмотреть: в Proxmox UI номер указан рядом с именем контейнера.
+> Если контейнер уже запускался — останови, добавь строки, запусти снова.
 
-> Если контейнер уже запускался — не страшно. Останови (Stop), добавь строки, запусти снова.
+### 1.3 Проверить модуль TPROXY на хосте Proxmox
 
-### 1.3 Установка Tailscale
-
-Запустить контейнер → Console → логин `root`, пароль из шага 1.1:
+На **хосте Proxmox**:
 
 ```bash
-# Обновить систему
+modprobe xt_TPROXY
+echo "xt_TPROXY" >> /etc/modules
+```
+
+---
+
+## Этап 2 — Установка Tailscale
+
+Запустить контейнер → Console → логин `root`:
+
+```bash
 apt update && apt upgrade -y
 
-# Установить Tailscale (официальный скрипт)
 curl -fsSL https://tailscale.com/install.sh | sh
 
-# Включить IP forwarding (нужно для subnet router)
 echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf
 echo 'net.ipv6.conf.all.forwarding = 1' >> /etc/sysctl.conf
 sysctl -p
-```
 
-### 1.4 Включить автозапуск и запустить
-
-```bash
 systemctl enable --now tailscaled
 ```
 
-### 1.5 Исправить предупреждение UDP GRO
+### Исправить предупреждение UDP GRO
 
 ```bash
 apt install -y ethtool
 ethtool -K eth0 rx-udp-gro-forwarding on rx-gro-list off
 ```
 
-Чтобы применялось после перезагрузки — добавить в `/etc/network/interfaces` в секцию `iface eth0`:
+Добавить в `/etc/network/interfaces` в секцию `iface eth0`:
 
 ```
 post-up ethtool -K eth0 rx-udp-gro-forwarding on rx-gro-list off
 ```
 
-### 1.6 Авторизация в Tailscale
+### Авторизация
 
 ```bash
 tailscale up \
@@ -131,72 +132,59 @@ tailscale up \
   --accept-dns=false
 ```
 
-> `192.168.1.0/24` — это вся твоя домашняя подсеть целиком, не IP роутера. Менять только если у тебя другой диапазон (проверить: `ip route` на хосте Proxmox).
+Открыть ссылку в браузере → авторизовать устройство.
 
-Команда выдаст ссылку — открыть в браузере и авторизовать устройство.
+> `192.168.1.0/24` — вся домашняя подсеть. Менять только если у тебя другой диапазон.
 
-### 1.7 Одобрить маршруты в Tailscale Admin Console
+### Одобрить маршруты в Tailscale Admin Console
 
-Перейти на [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines):
+[login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines):
 
-1. Найти свою ноду → **Edit route settings**
-2. Включить **Use as exit node** ✓
-3. Включить подсеть `192.168.1.0/24` ✓
+1. Найти ноду → **Edit route settings**
+2. **Use as exit node** ✓
+3. Подсеть `192.168.1.0/24` ✓
+
+> ⚠️ Если Tailscale не может авторизоваться — остановить Mihomo (`systemctl stop mihomo`), авторизоваться, затем снова запустить.
 
 ---
 
-## Этап 2 — LXC для Mihomo
-
-### 2.1 Создание контейнера
-
-В Proxmox UI → **Create CT**:
-
-| Параметр | Значение |
-|---|---|
-| Hostname | `Mihomo` |
-| Password | придумать |
-| Template | Debian 12 |
-| Disk | 2 GB |
-| CPU | 1 core |
-| RAM | 256 MB |
-| Network | bridge `vmbr0`, **статический IP** (например `192.168.1.11`), Gateway = IP роутера |
-| Firewall | снять галочку |
-
-> Привилегированный контейнер для Mihomo **не нужен**.
-> Статический IP обязателен — он прописывается в правилах Tailscale-контейнера.
-> Если не указать Gateway — не будет интернета и ничего не скачается.
-
-Включить Nesting: **CT → Options → Features → Nesting ✓**
-
-### 2.2 Установка Mihomo
+## Этап 3 — Установка Mihomo
 
 ```bash
-apt update && apt install -y wget
+apt install -y wget
 ```
 
-Скачать бинарник. Актуальную версию смотреть на [github.com/MetaCubeX/mihomo/releases](https://github.com/MetaCubeX/mihomo/releases) — нужен файл вида `mihomo-linux-amd64-compatible-vX.X.X.gz`:
+Актуальную версию смотреть на [github.com/MetaCubeX/mihomo/releases](https://github.com/MetaCubeX/mihomo/releases):
 
 ```bash
-# Заменить версию на актуальную
 wget https://github.com/MetaCubeX/mihomo/releases/download/v1.19.22/mihomo-linux-amd64-compatible-v1.19.22.gz
 gunzip mihomo-linux-amd64-compatible-v1.19.22.gz
 chmod +x mihomo-linux-amd64-compatible-v1.19.22
 mv mihomo-linux-amd64-compatible-v1.19.22 /usr/local/bin/mihomo
-
-# Проверить
 mihomo -v
 ```
 
-> ⚠️ Важно: использовать `/releases/download/` в URL, а не `/releases/tag/` — иначе скачается HTML-страница вместо бинарника.
+> ⚠️ URL: `/releases/download/` — не `/releases/tag/`, иначе скачается HTML.
 
-### 2.3 Конфигурация Mihomo
+### Скачать базы GeoSite и GeoIP
+
+Используем [runetfreedom/russia-v2ray-rules-dat](https://github.com/runetfreedom/russia-v2ray-rules-dat) — обновляется каждые 6 часов, содержит актуальные списки РКН:
 
 ```bash
 mkdir -p /etc/mihomo
-nano /etc/mihomo/config.yaml
+
+wget -O /etc/mihomo/geosite.dat \
+  https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat
+
+wget -O /etc/mihomo/geoip.dat \
+  https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geoip.dat
 ```
 
-Содержимое — **копировать аккуратно**, опечатки в словах `DIRECT`/`REJECT`/`PROXY` приведут к ошибке запуска:
+### Конфигурация Mihomo
+
+```bash
+nano /etc/mihomo/config.yaml
+```
 
 ```yaml
 mixed-port: 7890
@@ -206,6 +194,10 @@ bind-address: "*"
 mode: rule
 log-level: info
 ipv6: false
+
+external-controller: 0.0.0.0:9090
+secret: "yourpassword"
+external-ui: /etc/mihomo/ui
 
 dns:
   enable: true
@@ -226,12 +218,28 @@ dns:
       - 240.0.0.0/4
 
 proxies:
-  # Добавить свои прокси-серверы здесь
+  - name: "vdsina"
+    type: vless
+    server: your.server.com      # адрес сервера
+    port: 443
+    uuid: your-uuid-here
+    network: xhttp
+    tls: true
+    udp: true
+    reality-opts:
+      public-key: your-public-key
+      short-id: "your-short-id"
+    client-fingerprint: firefox
+    servername: github.com
+    xhttp-opts:
+      path: /
+      mode: auto
 
 proxy-groups:
   - name: "PROXY"
     type: select
     proxies:
+      - vdsina
       - DIRECT
 
 rules:
@@ -239,25 +247,14 @@ rules:
   - IP-CIDR,10.0.0.0/8,DIRECT
   - IP-CIDR,172.16.0.0/12,DIRECT
   - IP-CIDR,127.0.0.0/8,DIRECT
+  - GEOSITE,ru-blocked,PROXY
   - GEOIP,RU,DIRECT
-  - DOMAIN-SUFFIX,gosuslugi.ru,DIRECT
-  - DOMAIN-SUFFIX,nalog.ru,DIRECT
-  - DOMAIN-SUFFIX,sberbank.ru,DIRECT
-  - DOMAIN-SUFFIX,tinkoff.ru,DIRECT
-  - DOMAIN-SUFFIX,vk.com,DIRECT
-  - DOMAIN-SUFFIX,yandex.ru,DIRECT
-  - DOMAIN-SUFFIX,mail.ru,DIRECT
-  - DOMAIN-SUFFIX,google.com,REJECT
-  - DOMAIN-SUFFIX,youtube.com,REJECT
-  - DOMAIN-SUFFIX,instagram.com,REJECT
-  - DOMAIN-SUFFIX,facebook.com,REJECT
-  - DOMAIN-SUFFIX,twitter.com,REJECT
-  - DOMAIN,connectivitycheck.gstatic.com,REJECT
-  - DOMAIN,detectportal.firefox.com,REJECT
   - MATCH,PROXY
 ```
 
-### 2.4 Systemd-сервис
+> Данные прокси взять из панели 3x-ui → Inbounds → иконка ссылки → скопировать `vless://...`
+
+### Systemd-сервис
 
 ```bash
 nano /etc/systemd/system/mihomo.service
@@ -284,74 +281,32 @@ systemctl enable --now mihomo
 systemctl status mihomo
 ```
 
-Если статус `active (running)` — всё хорошо. Если `failed` — смотреть ошибку:
-
-```bash
-journalctl -u mihomo -n 30 --no-pager
-```
-
-Самая частая ошибка — опечатка в config.yaml (например `DI2BRECT` вместо `DIRECT`). Исправить в файле, затем `systemctl restart mihomo`.
-
 ---
 
-## Этап 3 — Перенаправление трафика
+## Этап 4 — Перенаправление трафика (TPROXY)
 
-> ⚠️ **Все команды этого этапа выполняются в контейнере Tailscale (не Mihomo).**
-
-Весь трафик с телефона, пришедший через Tailscale, перенаправляется в Mihomo через TPROXY.
-
-### 3.1 Проверить IP контейнера Mihomo
-
-Сначала убедиться в IP-адресе LXC Mihomo. В консоли Mihomo:
-
-```bash
-ip addr show eth0
-```
-
-Запомнить IP (должен совпадать с тем что указывали при создании, например `192.168.1.11`).
-
-### 3.2 Проверить наличие TPROXY-модуля на хосте Proxmox
-
-На **хосте Proxmox** (не в LXC):
-
-```bash
-modprobe xt_TPROXY
-lsmod | grep TPROXY
-```
-
-Если пусто — модуль не загружен, TPROXY работать не будет. Добавить в автозагрузку:
-
-```bash
-echo "xt_TPROXY" >> /etc/modules
-```
-
-### 3.3 Установка iptables в контейнере Tailscale
-
-В консоли **контейнера Tailscale**:
+> ⚠️ Все команды выполняются в том же LXC (Tailscale + Mihomo).
 
 ```bash
 apt install -y iptables iptables-persistent
-```
 
-### 3.4 Правила перенаправления
-
-```bash
-# Заменить на реальный IP контейнера Mihomo
-MIHOMO_IP=192.168.1.11
+# Mihomo работает локально
+MIHOMO_IP=127.0.0.1
 MIHOMO_PORT=7893
 
-# Перенаправить трафик с tailscale0 в Mihomo через TPROXY
+# Исключить собственный трафик LXC (eth0)
+iptables -t mangle -A PREROUTING -i eth0 -j RETURN
+
+# Перенаправить трафик с телефона (tailscale0) в Mihomo
 iptables -t mangle -A PREROUTING -i tailscale0 -p tcp \
   -j TPROXY --on-ip $MIHOMO_IP --on-port $MIHOMO_PORT --tproxy-mark 1
 
 iptables -t mangle -A PREROUTING -i tailscale0 -p udp \
   -j TPROXY --on-ip $MIHOMO_IP --on-port $MIHOMO_PORT --tproxy-mark 1
 
-# Маршрутизация помеченного трафика
 ip rule add fwmark 1 table 100
 ip route add local 0.0.0.0/0 dev lo table 100
 
-# Сохранить правила iptables (переживут перезагрузку)
 netfilter-persistent save
 ```
 
@@ -361,11 +316,7 @@ netfilter-persistent save
 iptables -t mangle -L PREROUTING -n -v
 ```
 
-Должны быть две строки с `TPROXY`.
-
-### 3.5 Добавить ip rule и ip route в автозапуск
-
-Правила `ip rule` и `ip route` **не сохраняются** через `netfilter-persistent` — их нужно добавить отдельно:
+### Автозапуск ip rule / ip route
 
 ```bash
 nano /etc/rc.local
@@ -382,78 +333,72 @@ exit 0
 chmod +x /etc/rc.local
 ```
 
-Проверить что файл корректный:
+---
+
+## Этап 5 — Автообновление баз
 
 ```bash
-bash /etc/rc.local && echo "OK"
+crontab -e
+```
+
+```
+0 */6 * * * wget -q -O /etc/mihomo/geosite.dat https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat && wget -q -O /etc/mihomo/geoip.dat https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geoip.dat && systemctl restart mihomo
 ```
 
 ---
 
-## Этап 4 — Настройка телефона
+## Этап 6 — Настройка телефона
 
 ### Android
 
 1. Установить **Tailscale** из Play Store
 2. Войти в аккаунт
-3. Нажать на свою сеть → **Use exit node** → выбрать домашнюю ноду
-4. DNS придёт автоматически через Mihomo
+3. **Use exit node** → выбрать домашнюю ноду (gmk-tec)
+4. В настройках Tailscale включить **Use Tailscale subnets** — для доступа к локальной сети
 
 ### iOS
 
 1. Установить **Tailscale** из App Store
-2. Войти в аккаунт
-3. В настройках сети → выбрать exit node
+2. Войти в аккаунт → выбрать exit node
+
+### Доступ к локальным сервисам
+
+С телефона через Tailscale доступна вся домашняя сеть по обычным IP:
+
+- Proxmox: `https://192.168.1.X:8006`
+- Mihomo UI: `http://192.168.1.X:9090/ui`
 
 ---
 
-## Этап 5 — Проверка и отладка
+## Веб-интерфейс Mihomo (Yacd)
 
-### Проверить Tailscale
+Mihomo автоматически скачивает UI при первом запуске (нужен интернет).
+
+Открыть: `http://<IP LXC>:9090/ui`
+
+- **Host:** `http://<IP LXC>:9090`
+- **Secret:** пароль из `config.yaml`
+
+В разделе **Proxies** → группа **PROXY** → выбрать нужный прокси (vdsina или DIRECT).
+
+---
+
+## Проверка и отладка
 
 ```bash
-# В LXC Tailscale
+# Статус Tailscale
 tailscale status
-```
+tailscale ping <устройство>
 
-Должны быть видны все устройства сети, включая телефон.
-
-### Проверить что трафик идёт через Mihomo
-
-```bash
-# В LXC Tailscale — смотреть трафик с телефона
-apt install -y tcpdump
-tcpdump -i tailscale0 -n
-```
-
-Открыть любой сайт на телефоне — в выводе должны быть пакеты.
-
-### Посмотреть логи Mihomo
-
-```bash
-# В LXC Mihomo
+# Логи Mihomo в реальном времени
 journalctl -u mihomo -f
-```
 
-### Найти маркерные домены конкретного приложения
-
-```bash
-# В LXC Tailscale — фильтровать DNS-запросы
+# Трафик с телефона
 tcpdump -i tailscale0 -n port 53
+
+# Правила iptables
+iptables -t mangle -L PREROUTING -n -v
 ```
-
-Открыть банковское приложение → посмотреть к каким доменам оно обращается в первые секунды. Добавить их в REJECT-список `/etc/mihomo/config.yaml`, затем `systemctl restart mihomo`.
-
-### Веб-интерфейс Mihomo (Yacd)
-
-Добавить в `/etc/mihomo/config.yaml`:
-
-```yaml
-external-controller: 0.0.0.0:9090
-secret: "yourpassword"
-```
-
-Открыть в браузере: `http://192.168.1.11:9090/ui`
 
 ---
 
@@ -461,38 +406,40 @@ secret: "yourpassword"
 
 | Симптом | Причина | Решение |
 |---|---|---|
-| Tailscale не стартует | Нет `/dev/tun` | Добавить `lxc.mount.entry` в конфиг LXC, перезапустить |
+| Tailscale не стартует | Нет `/dev/tun` | Добавить `lxc.mount.entry` в конфиг LXC |
+| Tailscale не авторизуется | Mihomo перехватывает DNS | `systemctl stop mihomo`, авторизоваться, `systemctl start mihomo` |
 | Mihomo не запускается | Опечатка в config.yaml | `journalctl -u mihomo -n 20` — покажет строку с ошибкой |
 | Нет интернета в LXC | Не указан Gateway | CT → Network → добавить Gateway (IP роутера) |
 | Трафик не идёт через Mihomo | Нет модуля xt_TPROXY | `modprobe xt_TPROXY` на хосте Proxmox |
-| DNS не резолвится | Конфликт DNS | Проверить что Mihomo слушает `0.0.0.0:53` |
-| Приложение всё равно видит VPN | Не все маркеры в REJECT | tcpdump что именно оно пингует, добавить в REJECT |
-| Ошибка `command not found` после скачивания | Нет прав на выполнение | `chmod +x /usr/local/bin/mihomo` |
+| Proxmox не открывается с телефона | Subnet routes не включены | Tailscale Admin → одобрить подсеть; на телефоне включить subnets |
+| Нода оффлайн в статусе | Задержка обновления | `tailscale ping <устройство>` — реальная проверка связи |
 
 ---
 
 ## Структура файлов
 
 ```
-/etc/pve/lxc/
-  <ID>.conf         ← конфиг LXC Tailscale (lxc.mount.entry и т.д.)
+/etc/pve/lxc/<ID>.conf     ← конфиг LXC (lxc.mount.entry)
 
 /etc/mihomo/
-  config.yaml       ← конфигурация Mihomo
+  config.yaml              ← конфигурация Mihomo
+  geosite.dat              ← базы доменов (runetfreedom, обновляется cron)
+  geoip.dat                ← базы IP (runetfreedom, обновляется cron)
+  ui/                      ← веб-интерфейс Yacd
 
 /etc/systemd/system/
-  mihomo.service    ← сервис автозапуска
+  mihomo.service           ← сервис автозапуска
 
-/etc/rc.local       ← автозапуск ip rule / ip route (в LXC Tailscale)
+/etc/rc.local              ← автозапуск ip rule / ip route
 ```
 
 ---
 
 ## Следующие шаги
 
-- [ ] [[Mihomo — расширенные правила]] — GeoIP базы, доменные списки, два профиля
-- [ ] [[Tailscale — MagicDNS]] — красивые имена для устройств в сети
-- [ ] [[Proxmox — бэкапы LXC]] — сохранить конфигурацию контейнеров
+- [ ] [[AdGuard Home + Nginx Proxy Manager]] — свой DNS, блокировка рекламы, доступ к сервисам по имени
+- [ ] [[Mihomo — расширенные правила]] — антидетект для банковских приложений
+- [ ] [[Proxmox — бэкапы LXC]] — резервное копирование контейнеров
 
 ---
 
