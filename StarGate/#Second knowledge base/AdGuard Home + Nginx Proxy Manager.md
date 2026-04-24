@@ -88,12 +88,38 @@ curl -sSL https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scrip
 
 После настройки AdGuard Home слушает на порту **53** (DNS) и **80** (веб-интерфейс).
 
-### 1.3 Прописать AdGuard как DNS на роутере
+### 1.3 Прописать AdGuard как DNS на роутере (OpenWrt)
 
-В настройках роутера (обычно 192.168.1.1):
-- DNS сервер: `192.168.1.53`
+Есть два способа. **Способ 1 — рекомендуемый** (клиенты видят AdGuard напрямую, в логах AdGuard видны реальные IP устройств):
 
-Все устройства в сети начнут использовать AdGuard Home.
+**Network → Interfaces → LAN → Edit → вкладка DHCP Server → Advanced Settings**
+- Поле **DHCP-Options**: добавить `6,192.168.1.53`
+
+Это говорит Dnsmasq: «раздавай клиентам AdGuard как DNS-сервер через DHCP».
+
+---
+
+**Способ 2 — через DNS forwardings** (проще, но AdGuard видит только IP роутера, не клиентов):
+
+**Network → DHCP and DNS → General Settings**
+- Поле **DNS forwardings**: нажать `+`, ввести `/#/192.168.1.53`
+
+Синтаксис: `/#/` = все домены → forwarding на `192.168.1.53`.
+
+---
+
+> После сохранения и Apply — переподключить устройства (или дождаться обновления DHCP lease), чтобы они получили новый DNS.
+
+Проверка на ПК:
+```bash
+# Linux/Mac
+nslookup google.com 192.168.1.53
+
+# Windows
+nslookup google.com 192.168.1.53
+```
+
+Если ответ приходит — AdGuard работает. В AdGuard Home → **Query Log** появятся запросы.
 
 ### 1.4 Добавить кастомные локальные имена
 
