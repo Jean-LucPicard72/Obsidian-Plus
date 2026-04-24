@@ -313,8 +313,32 @@ netfilter-persistent save
 Проверить что правила применились:
 
 ```bash
-iptables -t mangle -L PREROUTING -n -v
+iptables -t mangle -L PREROUTING -n -v --line-numbers
 ```
+
+### Удалить RETURN-правило для UDP 443 (QUIC)
+
+Tailscale автоматически добавляет правило которое пропускает QUIC (UDP 443) мимо TPROXY — из-за этого сайты блокирующие российские IP (например claude.ai) не работают через прокси.
+
+Найди и удали его:
+
+```bash
+iptables -t mangle -L PREROUTING -n -v --line-numbers | grep "udp dpt:443"
+```
+
+Найдёшь строку вида:
+```
+7   RETURN  17  --  tailscale0  *  0.0.0.0/0  0.0.0.0/0  udp dpt:443
+```
+
+Удали по номеру строки (в примере — 7):
+
+```bash
+iptables -t mangle -D PREROUTING 7
+netfilter-persistent save
+```
+
+> После этого QUIC (HTTP/3) тоже идёт через Mihomo. Сайты блокирующие российские IP работают без ручного добавления в списки.
 
 ### Автозапуск ip rule / ip route
 
