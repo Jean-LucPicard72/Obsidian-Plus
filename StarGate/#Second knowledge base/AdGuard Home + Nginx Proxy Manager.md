@@ -64,9 +64,29 @@ apt update && apt install -y curl
 curl -sSL https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh | sh -s -- -v
 ```
 
-Открыть в браузере: `http://192.168.1.53:3000` — пройти первоначальную настройку.
+Открыть в браузере: `http://192.168.1.53:3000` — запустится мастер установки (5 шагов).
 
-После настройки AdGuard Home слушает на порту **53** (DNS) и **80/3000** (веб-интерфейс).
+**Шаг 1 — Welcome:** нажать **Get Started**.
+
+**Шаг 2 — Admin Web Interface + DNS** (скриншот):
+- Admin Web Interface → Listen interface: `All interfaces`, Port: `80`
+- DNS server → Listen interface: `All interfaces`, Port: `53`
+- Нажать **Next**
+
+> Если порт 80 занят — поставить `3000`, тогда веб-интерфейс будет постоянно на 3000.
+
+**Шаг 3 — Authentication:**
+- Задать логин и пароль администратора
+- Нажать **Next**
+
+**Шаг 4 — Configure devices:**
+- Страница показывает IP-адреса DNS-сервера — ничего менять не нужно
+- Нажать **Next**
+
+**Шаг 5 — Done:**
+- Нажать **Open Dashboard** → откроется веб-интерфейс уже на порту **80** (или 3000)
+
+После настройки AdGuard Home слушает на порту **53** (DNS) и **80** (веб-интерфейс).
 
 ### 1.3 Прописать AdGuard как DNS на роутере
 
