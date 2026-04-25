@@ -121,7 +121,34 @@ nslookup google.com 192.168.1.53
 
 Если ответ приходит — AdGuard работает. В AdGuard Home → **Query Log** появятся запросы.
 
-### 1.4 Добавить кастомные локальные имена
+### 1.4 Настроить upstream DNS-серверы
+
+> Это обязательный шаг. Без upstream DNS AdGuard не может резолвить ничего сам — ни обновления проверить, ни интернет-запросы клиентов обработать.
+
+**AdGuard Home → Settings → DNS settings → Upstream DNS servers:**
+
+```
+https://dns10.quad9.net/dns-query
+8.8.8.8
+1.1.1.1
+```
+
+Нажать **Apply** → **Test upstreams** (кнопка рядом) — все три должны показать ✓.
+
+После этого ошибка «Update check failed» пропадёт.
+
+---
+
+> **Диагностика**, если ошибка осталась — из консоли LXC:
+> ```bash
+> ping -c 3 8.8.8.8          # есть ли интернет
+> cat /etc/resolv.conf        # что прописано как DNS у контейнера
+> ```
+> Если ping не проходит — проблема в сети LXC (проверь bridge vmbr0 и настройки сети Proxmox).
+
+---
+
+### 1.5 Добавить кастомные локальные имена
 
 В AdGuard Home → **Filters → DNS rewrites → Add DNS rewrite**:
 
