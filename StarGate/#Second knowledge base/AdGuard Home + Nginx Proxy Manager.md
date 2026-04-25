@@ -49,8 +49,10 @@ Nginx Proxy Manager
 | Template | Debian 12 |
 | Disk | 2 GB |
 | RAM | 256 MB |
-| Network | bridge `vmbr0`, статический IP (например `192.168.1.53`) |
+| Network | bridge `vmbr0`, статический IP (например `192.168.1.53/24`), **Gateway: `192.168.1.1`** |
 | Firewall | снять галочку |
+
+> **Обязательно указать Gateway** — без него контейнер не имеет доступа в интернет (`Network is unreachable`). Это частая ошибка при создании LXC.
 
 > Статический IP удобен — его прописываешь в настройках роутера как DNS-сервер.
 
@@ -64,18 +66,91 @@ apt update && apt install -y curl
 curl -sSL https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh | sh -s -- -v
 ```
 
-Открыть в браузере: `http://192.168.1.53:3000` — пройти первоначальную настройку.
+Открыть в браузере: `http://192.168.1.53:3000` — запустится мастер установки (5 шагов).
 
-После настройки AdGuard Home слушает на порту **53** (DNS) и **80/3000** (веб-интерфейс).
+**Шаг 1 — Welcome:** нажать **Get Started**.
 
-### 1.3 Прописать AdGuard как DNS на роутере
+**Шаг 2 — Admin Web Interface + DNS** (скриншот):
+- Admin Web Interface → Listen interface: `All interfaces`, Port: `80`
+- DNS server → Listen interface: `All interfaces`, Port: `53`
+- Нажать **Next**
 
-В настройках роутера (обычно 192.168.1.1):
-- DNS сервер: `192.168.1.53`
+> Если порт 80 занят — поставить `3000`, тогда веб-интерфейс будет постоянно на 3000.
 
-Все устройства в сети начнут использовать AdGuard Home.
+**Шаг 3 — Authentication:**
+- Задать логин и пароль администратора
+- Нажать **Next**
 
-### 1.4 Добавить кастомные локальные имена
+**Шаг 4 — Configure devices:**
+- Страница показывает IP-адреса DNS-сервера — ничего менять не нужно
+- Нажать **Next**
+
+**Шаг 5 — Done:**
+- Нажать **Open Dashboard** → откроется веб-интерфейс уже на порту **80** (или 3000)
+
+После настройки AdGuard Home слушает на порту **53** (DNS) и **80** (веб-интерфейс).
+
+### 1.3 Прописать AdGuard как DNS на роутере (OpenWrt)
+
+Есть два способа. **Способ 1 — рекомендуемый** (клиенты видят AdGuard напрямую, в логах AdGuard видны реальные IP устройств):
+
+**Network → Interfaces → LAN → Edit → вкладка DHCP Server → Advanced Settings**
+- Поле **DHCP-Options**: добавить `6,192.168.1.53`
+
+Это говорит Dnsmasq: «раздавай клиентам AdGuard как DNS-сервер через DHCP».
+
+---
+
+**Способ 2 — через DNS forwardings** (проще, но AdGuard видит только IP роутера, не клиентов):
+
+**Network → DHCP and DNS → General Settings**
+- Поле **DNS forwardings**: нажать `+`, ввести `/#/192.168.1.53`
+
+Синтаксис: `/#/` = все домены → forwarding на `192.168.1.53`.
+
+---
+
+> После сохранения и Apply — переподключить устройства (или дождаться обновления DHCP lease), чтобы они получили новый DNS.
+
+Проверка на ПК:
+```bash
+# Linux/Mac
+nslookup google.com 192.168.1.53
+
+# Windows
+nslookup google.com 192.168.1.53
+```
+
+Если ответ приходит — AdGuard работает. В AdGuard Home → **Query Log** появятся запросы.
+
+### 1.4 Настроить upstream DNS-серверы
+
+> Это обязательный шаг. Без upstream DNS AdGuard не может резолвить ничего сам — ни обновления проверить, ни интернет-запросы клиентов обработать.
+
+**AdGuard Home → Settings → DNS settings → Upstream DNS servers:**
+
+```
+https://dns10.quad9.net/dns-query
+8.8.8.8
+1.1.1.1
+```
+
+Нажать **Apply** → **Test upstreams** (кнопка рядом) — все три должны показать ✓.
+
+После этого ошибка «Update check failed» пропадёт.
+
+---
+
+> **Диагностика**, если ошибка осталась — из консоли LXC:
+> ```bash
+> ping -c 3 8.8.8.8          # есть ли интернет
+> cat /etc/resolv.conf        # что прописано как DNS у контейнера
+> ```
+> Если ping не проходит — проблема в сети LXC (проверь bridge vmbr0 и настройки сети Proxmox).
+
+---
+
+### 1.5 Добавить кастомные локальные имена
 
 В AdGuard Home → **Filters → DNS rewrites → Add DNS rewrite**:
 
