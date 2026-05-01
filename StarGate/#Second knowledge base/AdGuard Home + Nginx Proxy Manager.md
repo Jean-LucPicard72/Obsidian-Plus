@@ -52,12 +52,12 @@ Nginx Proxy Manager (192.168.1.80)
 | RAM | 256 MB |
 | Network | bridge `vmbr0`, статический IP (например `192.168.1.53/24`), **Gateway: `192.168.1.1`** |
 | Firewall | снять галочку |
+| Unprivileged container | ✓ (по умолчанию, не менять) |
+| Nesting | ✗ (не нужен — AdGuard работает без Docker) |
 
 > **Обязательно указать Gateway** — без него контейнер не имеет доступа в интернет (`Network is unreachable`). Это частая ошибка при создании LXC.
 
 > Статический IP удобен — его прописываешь в настройках роутера как DNS-сервер.
-
-Включить Nesting: **CT → Options → Features → Nesting ✓**
 
 ### 1.2 Установка AdGuard Home
 
@@ -179,7 +179,10 @@ https://dns10.quad9.net/dns-query
 | Template | Debian 12 |
 | Disk | 4 GB |
 | RAM | 256 MB |
-| Network | bridge `vmbr0`, статический IP (например `192.168.1.80`) |
+| Network | bridge `vmbr0`, статический IP (`192.168.1.80/24`), **Gateway: `192.168.1.1`** |
+| Firewall | снять галочку |
+| Unprivileged container | ✓ (по умолчанию, не менять) |
+| Nesting | ✓ (обязательно — нужен для работы Docker внутри LXC) |
 
 ### 2.2 Установка Docker
 
