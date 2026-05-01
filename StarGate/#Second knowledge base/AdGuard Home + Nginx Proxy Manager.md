@@ -24,15 +24,16 @@
       ▼
 AdGuard Home (DNS, порт 53)
       │
-      ├── proxmox.home → 192.168.1.104
-      ├── mihomo.home  → 192.168.1.163
+      ├── proxmox.home → 192.168.1.80  ← IP Nginx PM !
+      ├── mihomo.home  → 192.168.1.80  ← IP Nginx PM !
+      ├── adguard.home → 192.168.1.53
       └── Реклама      → заблокировано
       │
       ▼
-Nginx Proxy Manager
+Nginx Proxy Manager (192.168.1.80)
       │
-      ├── proxmox.home → 192.168.1.104:8006
-      └── mihomo.home  → 192.168.1.163:9090
+      ├── Host: proxmox.home → 192.168.1.104:8006
+      └── Host: mihomo.home  → 192.168.1.163:9090
 ```
 
 ---
@@ -154,11 +155,17 @@ https://dns10.quad9.net/dns-query
 
 В AdGuard Home → **Filters → DNS rewrites → Add DNS rewrite**:
 
-| Домен | IP |
-|---|---|
-| `proxmox.home` | `192.168.1.104` |
-| `mihomo.home` | `192.168.1.163` |
-| `adguard.home` | `192.168.1.53` |
+| Домен | IP | Куда |
+|---|---|---|
+| `proxmox.home` | `192.168.1.80` | Nginx PM |
+| `mihomo.home` | `192.168.1.80` | Nginx PM |
+| `adguard.home` | `192.168.1.53` | AdGuard |
+
+> DNS rewrites должны указывать на **IP Nginx Proxy Manager** (`192.168.1.80`), а не на сервисы напрямую. NPM получит запрос, посмотрит на заголовок `Host:` и перенаправит куда нужно. Если указать IP сервиса — NPM будет обойдён.
+
+> **До настройки NPM** (Этап 2) сервисы доступны с явным портом:
+> - `https://192.168.1.104:8006` — Proxmox
+> - `http://192.168.1.163:9090/ui` — Mihomo
 
 ---
 
