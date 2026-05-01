@@ -220,7 +220,12 @@ docker compose up -d
 - Forward IP: `192.168.1.104`
 - Port: `8006`
 - Включить: **Websockets Support**
-- SSL: отключить верификацию (`SSL → Custom certificate → off`)
+- Вкладка **SSL** → выбрать сертификат (см. раздел 2.5), включить **Force SSL**, включить **Block Common Exploits**
+- Вкладка **Advanced** → в поле Custom Nginx Configuration добавить:
+  ```
+  proxy_ssl_verify off;
+  ```
+  *(Proxmox использует self-signed сертификат — без этого NPM отклонит бэкенд)*
 
 **Mihomo UI:**
 - Domain: `mihomo.home`
@@ -230,9 +235,41 @@ docker compose up -d
 
 ---
 
+### 2.5 Создать self-signed сертификат для локальных доменов
+
+> Proxmox по умолчанию уже работает через HTTPS на порту 8006. При прямом подключении по IP (`https://192.168.1.104:8006`) браузер покажет предупреждение о self-signed сертификате — нажать **Дополнительно → Всё равно перейти**. Этот раздел нужен чтобы убрать предупреждение при доступе через NPM по домену.
+
+На хосте Proxmox или в любом LXC:
+
+```bash
+openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+  -keyout /tmp/local.key \
+  -out /tmp/local.crt \
+  -subj "/CN=*.home" \
+  -addext "subjectAltName=DNS:proxmox.home,DNS:mihomo.home,DNS:adguard.home,DNS:*.home"
+```
+
+Просмотреть содержимое:
+
+```bash
+cat /tmp/local.crt
+cat /tmp/local.key
+```
+
+В NPM → **SSL Certificates → Add SSL Certificate → Custom**:
+- Вставить содержимое `local.crt` в поле **Certificate**
+- Вставить содержимое `local.key` в поле **Certificate Key**
+- Нажать **Save**
+
+Теперь в Proxy Host для `proxmox.home` → вкладка **SSL** → выбрать этот сертификат из списка.
+
+> Браузер всё равно покажет предупреждение при первом открытии (сертификат не выдан доверенным CA). Чтобы убрать его насовсем — нужно добавить `local.crt` в доверенные сертификаты ОС на каждом устройстве.
+
+---
+
 ## Проверка
 
-1. На любом устройстве в сети открыть `http://proxmox.home` — должен открыться Proxmox
+1. На любом устройстве в сети открыть `https://proxmox.home` — должен открыться Proxmox
 2. В AdGuard Home → **Query Log** — видны все DNS-запросы и что заблокировано
 
 ---
@@ -240,7 +277,7 @@ docker compose up -d
 ## Следующие шаги
 
 - [ ] Настроить списки блокировки в AdGuard Home (AdGuard DNS filter, EasyList Russia)
-- [ ] Настроить SSL-сертификаты для локальных доменов (Let's Encrypt или self-signed)
+- [ ] Добавить сертификат в доверенные на устройствах чтобы убрать предупреждение браузера
 - [ ] Добавить AdGuard Home в Tailscale для работы вне дома
 
 ---
