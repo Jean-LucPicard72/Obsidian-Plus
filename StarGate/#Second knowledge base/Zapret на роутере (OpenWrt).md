@@ -389,6 +389,7 @@ ln -s /etc/zapret/rules.nft /etc/nftables.d/zapret.nft
 
 - [[Tailscale + Mihomo на Proxmox]] — основной гайд по инфраструктуре
 - [[Mihomo — расширенные правила]] — правила для обхода антивпн-защиты в приложениях
+- [[Smart TV — обход блокировок без VPN]] — Medium, ti.com и геоблоки через Mihomo на телике
 - [[AdGuard Home + Nginx Proxy Manager]] — DNS и доступ к сервисам по имени
 
 ---
