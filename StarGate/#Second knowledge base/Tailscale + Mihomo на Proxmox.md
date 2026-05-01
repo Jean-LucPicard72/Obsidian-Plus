@@ -439,6 +439,7 @@ iptables -t mangle -L PREROUTING -n -v
 
 - [ ] [[AdGuard Home + Nginx Proxy Manager]] — свой DNS, блокировка рекламы, доступ к сервисам по имени
 - [ ] [[Mihomo — расширенные правила]] — антидетект для банковских приложений
+- [ ] [[Zapret на роутере (OpenWrt)]] — обход DPI для Discord и EFT прямо на роутере, без конфликтов с Tailscale
 - [ ] [[Proxmox — бэкапы LXC]] — резервное копирование контейнеров
 
 ---
